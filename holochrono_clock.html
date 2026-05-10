@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoloChronoQC</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="holo"></canvas>
+<script>
+const canvas = document.getElementById('holo');
+const ctx = canvas.getContext('2d');
+
+// ── CONFIG ──────────────────────────────────────────────
+const QUEBEC_OFFSET = null; // auto-detect DST
+const GLOW_COLOR_PRIMARY = [0, 255, 200];   // cyan-green
+const GLOW_COLOR_SECONDARY = [0, 180, 255]; // blue accent
+const GLOW_COLOR_GOLD = [255, 215, 0];      // gold accent
+const GRID_ALPHA = 0.12;
+const WIREFRAME_ALPHA = 0.6;
+
+let W, H, CX, CY, R;
+let frame = 0;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  CX = W / 2;
+  CY = H / 2;
+  R = Math.min(W, H) * 0.38;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── QUEBEC TIME ─────────────────────────────────────────
+function getQuebecTime() {
+  const now = new Date();
+  // Use Intl to get accurate Quebec time with DST
+  const opts = { timeZone: 'America/Toronto', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit' };
+  const parts = new Intl.DateTimeFormat('en-CA', opts).formatToParts(now);
+  const get = (t) => parts.find(p => p.type === t)?.value || '0';
+  return {
+    h: parseInt(get('hour')) % 24,
+    m: parseInt(get('minute')),
+    s: parseInt(get('second')),
+    ms: now.getMilliseconds(),
+    day: parseInt(get('day')),
+    month: parseInt(get('month')),
+    year: parseInt(get('year'))
+  };
+}
+
+// ── GLOW HELPERS ────────────────────────────────────────
+function glow(ctx, color, blur) {
+  ctx.shadowColor = `rgb(${color[0]},${color[1]},${color[2]})`;
+  ctx.shadowBlur = blur;
+}
+
+function setStroke(ctx, color, alpha, width) {
+  ctx.strokeStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+  ctx.lineWidth = width;
+}
+
+function setFill(ctx, color, alpha) {
+  ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+}
+
+// ── 3D WIREFRAME SPHERE ─────────────────────────────────
+function drawWireframeSphere(cx, cy, r, tilt, spin) {
+  const latLines = 8;
+  const lonLines = 12;
+
+  ctx.save();
+  glow(ctx, GLOW_COLOR_PRIMARY, 8);
+
+  // Latitude lines (horizontal ellipses)
+  for (let i = 1; i < latLines; i++) {
+    const frac = (i / latLines) * Math.PI - Math.PI / 2;
+    const y_off = Math.sin(frac) * r * Math.cos(tilt);
+    const rx = Math.cos(frac) * r;
+    const ry = rx * Math.abs(Math.sin(tilt)) * 0.3 + rx * 0.05;
+
+    setStroke(ctx, GLOW_COLOR_PRIMARY, GRID_ALPHA * (0.5 + 0.5 * Math.cos(frac)), 0.8);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - y_off, Math.max(rx, 1), Math.max(ry, 1), 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Longitude lines (vertical ellipses rotated)
+  for (let i = 0; i < lonLines; i++) {
+    const angle = (i / lonLines) * Math.PI + spin;
+    const rx_proj = r * Math.abs(Math.cos(angle));
+    const ry_proj = r;
+
+    setStroke(ctx, GLOW_COLOR_SECONDARY, GRID_ALPHA * 0.7, 0.6);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.max(rx_proj, 1), ry_proj, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ── CLOCK FACE RING ─────────────────────────────────────
+function drawClockRing(cx, cy, r) {
+  ctx.save();
+
+  // Outer ring — double line with glow
+  glow(ctx, GLOW_COLOR_PRIMARY, 20);
+  setStroke(ctx, GLOW_COLOR_PRIMARY, 0.9, 2.5);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Second ring slightly inside
+  setStroke(ctx, GLOW_COLOR_PRIMARY, 0.4, 1.2);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.92, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Inner ring
+  glow(ctx, GLOW_COLOR_SECONDARY, 12);
+  setStroke(ctx, GLOW_COLOR_SECONDARY, 0.3, 0.8);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.88, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Minute ticks
+  for (let i = 0; i < 60; i++) {
+    const angle = (i / 60) * Math.PI * 2 - Math.PI / 2;
+    const isHour = i % 5 === 0;
+    const innerR = isHour ? r * 0.85 : r * 0.89;
+    const outerR = r * 0.92;
+    const x1 = cx + Math.cos(angle) * innerR;
+    const y1 = cy + Math.sin(angle) * innerR;
+    const x2 = cx + Math.cos(angle) * outerR;
+    const y2 = cy + Math.sin(angle) * outerR;
+
+    if (isHour) {
+      glow(ctx, GLOW_COLOR_PRIMARY, 15);
+      setStroke(ctx, GLOW_COLOR_PRIMARY, 0.95, 2.5);
+    } else {
+      glow(ctx, GLOW_COLOR_PRIMARY, 4);
+      setStroke(ctx, GLOW_COLOR_PRIMARY, 0.3, 0.8);
+    }
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ── NUMBERS ─────────────────────────────────────────────
+function drawNumbers(cx, cy, r) {
+  ctx.save();
+  const numR = r * 0.76;
+  const fontSize = r * 0.12;
+  ctx.font = `bold ${fontSize}px 'Courier New', monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let i = 1; i <= 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 - Math.PI / 2;
+    const x = cx + Math.cos(angle) * numR;
+    const y = cy + Math.sin(angle) * numR;
+
+    // Glow behind number
+    glow(ctx, GLOW_COLOR_PRIMARY, 20);
+    setFill(ctx, GLOW_COLOR_PRIMARY, 0.95);
+    ctx.fillText(i.toString(), x, y);
+
+    // Sharper overlay
+    glow(ctx, [255, 255, 255], 6);
+    setFill(ctx, [220, 255, 240], 0.5);
+    ctx.fillText(i.toString(), x, y);
+  }
+
+  ctx.restore();
+}
+
+// ── CLOCK HANDS ─────────────────────────────────────────
+function drawHand(cx, cy, angle, length, width, color, glowSize) {
+  ctx.save();
+  glow(ctx, color, glowSize);
+  setStroke(ctx, color, 0.95, width);
+  ctx.lineCap = 'round';
+
+  const x = cx + Math.cos(angle) * length;
+  const y = cy + Math.sin(angle) * length;
+
+  // Tail (small extension opposite)
+  const tx = cx - Math.cos(angle) * length * 0.15;
+  const ty = cy - Math.sin(angle) * length * 0.15;
+
+  ctx.beginPath();
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+
+  // Bright tip
+  glow(ctx, [255, 255, 255], glowSize * 1.5);
+  setFill(ctx, color, 1);
+  ctx.beginPath();
+  ctx.arc(x, y, width * 0.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawHands(cx, cy, r, time) {
+  const { h, m, s, ms } = time;
+
+  // Smooth second hand
+  const sFrac = s + ms / 1000;
+  const mFrac = m + sFrac / 60;
+  const hFrac = (h % 12) + mFrac / 60;
+
+  const sAngle = (sFrac / 60) * Math.PI * 2 - Math.PI / 2;
+  const mAngle = (mFrac / 60) * Math.PI * 2 - Math.PI / 2;
+  const hAngle = (hFrac / 12) * Math.PI * 2 - Math.PI / 2;
+
+  // Hour hand
+  drawHand(cx, cy, hAngle, r * 0.5, 4, GLOW_COLOR_GOLD, 18);
+
+  // Minute hand
+  drawHand(cx, cy, mAngle, r * 0.68, 3, GLOW_COLOR_PRIMARY, 15);
+
+  // Second hand
+  drawHand(cx, cy, sAngle, r * 0.75, 1.5, [255, 80, 60], 12);
+
+  // Center dot
+  ctx.save();
+  glow(ctx, [255, 255, 255], 20);
+  setFill(ctx, [255, 255, 255], 0.9);
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ── DECORATIVE ELEMENTS ─────────────────────────────────
+function drawAlarmBells(cx, cy, r) {
+  ctx.save();
+  glow(ctx, GLOW_COLOR_PRIMARY, 12);
+  setStroke(ctx, GLOW_COLOR_PRIMARY, WIREFRAME_ALPHA, 1.5);
+
+  // Left bell
+  const bellR = r * 0.18;
+  const bellY = cy - r * 0.85;
+
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.3, bellY, bellR, Math.PI * 0.15, Math.PI * 0.85);
+  ctx.stroke();
+
+  // Right bell
+  ctx.beginPath();
+  ctx.arc(cx + r * 0.3, bellY, bellR, Math.PI * 0.15, Math.PI * 0.85);
+  ctx.stroke();
+
+  // Handle/bridge on top
+  setStroke(ctx, GLOW_COLOR_PRIMARY, WIREFRAME_ALPHA * 0.8, 1.5);
+  ctx.beginPath();
+  ctx.arc(cx, cy - r * 1.05, r * 0.12, Math.PI * 1.1, Math.PI * 1.9);
+  ctx.stroke();
+
+  // Legs
+  setStroke(ctx, GLOW_COLOR_PRIMARY, WIREFRAME_ALPHA * 0.6, 1.2);
+
+  // Left leg
+  ctx.beginPath();
+  ctx.moveTo(cx - r * 0.35, cy + r * 0.9);
+  ctx.lineTo(cx - r * 0.5, cy + r * 1.05);
+  ctx.stroke();
+
+  // Right leg
+  ctx.beginPath();
+  ctx.moveTo(cx + r * 0.35, cy + r * 0.9);
+  ctx.lineTo(cx + r * 0.5, cy + r * 1.05);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── DIGITAL OVERLAY ─────────────────────────────────────
+function drawDigitalOverlay(cx, cy, r, time) {
+  ctx.save();
+  const { h, m, s, day, month, year } = time;
+
+  // Digital time below clock
+  const dY = cy + r * 1.15;
+  const fontSize = r * 0.09;
+  ctx.font = `${fontSize}px 'Courier New', monospace`;
+  ctx.textAlign = 'center';
+
+  // Time zone label
+  glow(ctx, GLOW_COLOR_GOLD, 15);
+  setFill(ctx, GLOW_COLOR_GOLD, 0.85);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+  const timeStr = `${h12}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')} ${ampm}`;
+  ctx.fillText(timeStr, cx, dY);
+
+  // Date
+  const months = ['','JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const dateStr = `${day} ${months[month]} ${year}`;
+  ctx.font = `${fontSize * 0.7}px 'Courier New', monospace`;
+  glow(ctx, GLOW_COLOR_PRIMARY, 10);
+  setFill(ctx, GLOW_COLOR_PRIMARY, 0.7);
+  ctx.fillText(dateStr, cx, dY + fontSize * 1.3);
+
+  // QUEBEC TIME label on top
+  ctx.font = `bold ${fontSize * 0.85}px 'Courier New', monospace`;
+  glow(ctx, GLOW_COLOR_PRIMARY, 18);
+  setFill(ctx, GLOW_COLOR_PRIMARY, 0.9);
+  ctx.fillText('QUÉBEC TIME', cx, cy - r * 1.15);
+
+  // EST/EDT
+  const isDST = isQuebecDST();
+  const tzStr = isDST ? 'EDT (UTC-4)' : 'EST (UTC-5)';
+  ctx.font = `${fontSize * 0.55}px 'Courier New', monospace`;
+  setFill(ctx, GLOW_COLOR_SECONDARY, 0.6);
+  ctx.fillText(tzStr, cx, cy - r * 1.05);
+
+  // HoloChronoQC branding
+  ctx.font = `${fontSize * 0.5}px 'Courier New', monospace`;
+  glow(ctx, GLOW_COLOR_GOLD, 8);
+  setFill(ctx, GLOW_COLOR_GOLD, 0.5);
+  ctx.fillText('HoloChronoQC™ v2.0', cx, dY + fontSize * 2.4);
+
+  ctx.restore();
+}
+
+function isQuebecDST() {
+  const now = new Date();
+  const jan = new Date(now.getFullYear(), 0, 1);
+  const jul = new Date(now.getFullYear(), 6, 1);
+  const janOff = jan.getTimezoneOffset();
+  const julOff = jul.getTimezoneOffset();
+  // Use Intl to check
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Toronto', timeZoneName: 'short'
+  });
+  return fmt.format(now).includes('EDT');
+}
+
+// ── SCANLINE EFFECT ─────────────────────────────────────
+function drawScanlines(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'overlay';
+  const scanY = (t * 80) % H;
+  const grad = ctx.createLinearGradient(0, scanY - 30, 0, scanY + 30);
+  grad.addColorStop(0, 'rgba(0,255,200,0)');
+  grad.addColorStop(0.5, 'rgba(0,255,200,0.03)');
+  grad.addColorStop(1, 'rgba(0,255,200,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle horizontal lines
+  ctx.globalAlpha = 0.025;
+  for (let y = 0; y < H; y += 3) {
+    ctx.fillStyle = '#0FC';
+    ctx.fillRect(0, y, W, 1);
+  }
+
+  ctx.restore();
+}
+
+// ── FLOATING PARTICLES ──────────────────────────────────
+const particles = [];
+for (let i = 0; i < 40; i++) {
+  particles.push({
+    x: Math.random() * 2 - 1,
+    y: Math.random() * 2 - 1,
+    vx: (Math.random() - 0.5) * 0.002,
+    vy: -Math.random() * 0.003 - 0.001,
+    size: Math.random() * 2 + 0.5,
+    alpha: Math.random() * 0.5 + 0.1,
+    pulse: Math.random() * Math.PI * 2
+  });
+}
+
+function drawParticles(t) {
+  ctx.save();
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.pulse += 0.03;
+    if (p.y < -1.2) { p.y = 1.2; p.x = Math.random() * 2 - 1; }
+    if (p.x < -1.2 || p.x > 1.2) p.x = Math.random() * 2 - 1;
+
+    const px = CX + p.x * R * 1.5;
+    const py = CY + p.y * R * 1.5;
+    const a = p.alpha * (0.5 + 0.5 * Math.sin(p.pulse));
+
+    glow(ctx, GLOW_COLOR_PRIMARY, 8);
+    setFill(ctx, GLOW_COLOR_PRIMARY, a);
+    ctx.beginPath();
+    ctx.arc(px, py, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ── BASE / PEDESTAL ─────────────────────────────────────
+function drawBase(cx, cy, r) {
+  ctx.save();
+  const baseY = cy + r * 1.0;
+  const baseW = r * 0.5;
+  const baseH = r * 0.12;
+
+  // Glowing base platform
+  glow(ctx, GLOW_COLOR_PRIMARY, 25);
+  setStroke(ctx, GLOW_COLOR_PRIMARY, 0.5, 2);
+
+  // Top ellipse of base
+  ctx.beginPath();
+  ctx.ellipse(cx, baseY, baseW, baseH * 0.4, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Base cylinder sides
+  ctx.beginPath();
+  ctx.moveTo(cx - baseW, baseY);
+  ctx.lineTo(cx - baseW, baseY + baseH);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + baseW, baseY);
+  ctx.lineTo(cx + baseW, baseY + baseH);
+  ctx.stroke();
+
+  // Bottom ellipse
+  ctx.beginPath();
+  ctx.ellipse(cx, baseY + baseH, baseW, baseH * 0.4, 0, 0, Math.PI);
+  ctx.stroke();
+
+  // Light beam from base upward
+  const beamGrad = ctx.createLinearGradient(cx, baseY, cx, cy - r * 0.5);
+  beamGrad.addColorStop(0, 'rgba(0,255,200,0.08)');
+  beamGrad.addColorStop(0.5, 'rgba(0,255,200,0.02)');
+  beamGrad.addColorStop(1, 'rgba(0,255,200,0)');
+  ctx.fillStyle = beamGrad;
+  ctx.beginPath();
+  ctx.moveTo(cx - baseW * 0.8, baseY);
+  ctx.lineTo(cx - r * 0.1, cy - r * 0.5);
+  ctx.lineTo(cx + r * 0.1, cy - r * 0.5);
+  ctx.lineTo(cx + baseW * 0.8, baseY);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ── MAIN RENDER LOOP ────────────────────────────────────
+function render() {
+  frame++;
+  const t = frame / 60;
+
+  // Clear with slight trail for afterglow
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.92)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Background vignette
+  const vignette = ctx.createRadialGradient(CX, CY, R * 0.3, CX, CY, R * 2);
+  vignette.addColorStop(0, 'rgba(0, 20, 15, 0)');
+  vignette.addColorStop(1, 'rgba(0, 0, 0, 0.7)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, W, H);
+
+  const time = getQuebecTime();
+  const spin = t * 0.15;
+  const tilt = 0.4 + Math.sin(t * 0.2) * 0.1;
+
+  // Draw layers back to front
+  drawParticles(t);
+  drawBase(CX, CY, R);
+  drawWireframeSphere(CX, CY, R * 0.95, tilt, spin);
+  drawClockRing(CX, CY, R);
+  drawAlarmBells(CX, CY, R);
+  drawNumbers(CX, CY, R);
+  drawHands(CX, CY, R, time);
+  drawDigitalOverlay(CX, CY, R, time);
+  drawScanlines(t);
+
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>
